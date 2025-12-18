@@ -1,0 +1,80 @@
+{
+  "name": "merch-vscode",
+  "displayName": "Merch",
+  "publisher": "hediet",
+  "version": "1.0.0",
+  "description": "Merch VS Code Extension",
+  "main": "./dist/extension/extension.js",
+  "bin": {
+    "merch": "./dist/cli/index.js"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "merch.merge",
+        "title": "Merch: Merge Files"
+      },
+      {
+        "command": "merch.split",
+        "title": "Merch: Split File"
+      },
+      {
+        "command": "merch.editFolder",
+        "title": "Edit folder as single file"
+      },
+      {
+        "command": "merch.apply",
+        "title": "Apply and Close",
+        "icon": "$(check)"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "merch.editFolder",
+          "when": "explorerResourceIsFolder",
+          "group": "modification"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "merch.apply",
+          "when": "resourceFilename =~ /\\.merch\\..+$/",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "build": "tsc",
+    "test": "jest",
+    "start": "ts-node src/cli/index.ts"
+  },
+  "dependencies": {
+    "glob": "^10.3.10",
+    "yargs": "^17.7.2"
+  },
+  "devDependencies": {
+    "@types/glob": "^8.1.0",
+    "@types/jest": "^29.5.11",
+    "@types/node": "^20.10.5",
+    "@types/vscode": "^1.85.0",
+    "@types/yargs": "^17.0.32",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}
