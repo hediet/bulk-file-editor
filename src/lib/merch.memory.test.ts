@@ -12,6 +12,14 @@ class StringWriter implements IWriter {
 
 const formatter = new LineFormatter('// ', '');
 
+function visualizeLineEndings(content: string): string {
+    return content
+        .replace(/\r\n/g, '<CRLF>')
+        .replace(/\n/g, '<LF>')
+        .replace(/<CRLF>/g, '[CRLF]\n')
+        .replace(/<LF>/g, '[LF]\n');
+}
+
 test('in-memory merge and split', async () => {
     const fs = new MemoryFileSystem({
         '/src/file1.txt': 'content1',
@@ -283,5 +291,288 @@ contentB
   "/src/B.txt": "contentA",
   "/src/C.txt": "contentB",
 }
+`);
+});
+
+test('all input files use CRLF', async () => {
+    const fs = new MemoryFileSystem({
+        '/src/file1.txt': 'line1\r\nline2',
+        '/src/file2.txt': 'lineA\r\nlineB',
+    });
+
+    const writer = new StringWriter();
+    await mergeFiles(['/src/file1.txt', '/src/file2.txt'], writer, formatter, '/src', false, fs);
+
+    expect(visualizeLineEndings(writer.content)).toMatchInlineSnapshot(`
+"// ====================[CRLF]
+// merch::setup: {"basePath":"/src"}[CRLF]
+// merch::existing-file: {"path":"file1.txt","idx":0,"hash":"d14a91a6d1c6ee83bf0c774ebecbee6d8b393b395dae29eea839c354d6fba9c0"}[CRLF]
+// merch::existing-file: {"path":"file2.txt","idx":1,"hash":"b574185d2521de2ac6ec8ad19a20ad5d53d80db79515210f5f99f3c5b40c500e"}[CRLF]
+// ====================[CRLF]
+[CRLF]
+// merch::file: {"path":"file1.txt","idx":0}:[CRLF]
+line1[CRLF]
+line2[CRLF]
+// merch::file: {"path":"file2.txt","idx":1}:[CRLF]
+lineA[CRLF]
+lineB[CRLF]
+"
+`);
+
+    // Simulate editing content (keeping CRLF in merch file)
+    const modifiedMerchContent = writer.content.replace('line1', 'line1_mod');
+    
+    await splitContent(modifiedMerchContent, false, fs, () => {});
+
+    const content1 = await fs.readFile('/src/file1.txt');
+    expect(visualizeLineEndings(content1)).toMatchInlineSnapshot(`
+"line1_mod[CRLF]
+line2"
+`);
+    
+    const content2 = await fs.readFile('/src/file2.txt');
+    expect(visualizeLineEndings(content2)).toMatchInlineSnapshot(`
+"lineA[CRLF]
+lineB"
+`);
+});
+
+test('all input files use LF', async () => {
+    const fs = new MemoryFileSystem({
+        '/src/file1.txt': 'line1\nline2',
+        '/src/file2.txt': 'lineA\nlineB',
+    });
+
+    const writer = new StringWriter();
+    await mergeFiles(['/src/file1.txt', '/src/file2.txt'], writer, formatter, '/src', false, fs);
+
+    expect(visualizeLineEndings(writer.content)).toMatchInlineSnapshot(`
+"// ====================[LF]
+// merch::setup: {"basePath":"/src"}[LF]
+// merch::existing-file: {"path":"file1.txt","idx":0,"hash":"683376e290829b482c2655745caffa7a1dccfa10afaa62dac2b42dd6c68d0f83"}[LF]
+// merch::existing-file: {"path":"file2.txt","idx":1,"hash":"f87fce3cef9a3a29f9b8ddd29d8e921b90b49021ef6382056200cb7591df9ee4"}[LF]
+// ====================[LF]
+[LF]
+// merch::file: {"path":"file1.txt","idx":0}:[LF]
+line1[LF]
+line2[LF]
+// merch::file: {"path":"file2.txt","idx":1}:[LF]
+lineA[LF]
+lineB[LF]
+"
+`);
+
+    const modifiedMerchContent = writer.content.replace('line1', 'line1_mod');
+    
+    await splitContent(modifiedMerchContent, false, fs, () => {});
+
+    const content1 = await fs.readFile('/src/file1.txt');
+    expect(visualizeLineEndings(content1)).toMatchInlineSnapshot(`
+"line1_mod[LF]
+line2"
+`);
+});
+
+test('mixed input files (first is CRLF)', async () => {
+    const fs = new MemoryFileSystem({
+        '/src/crlf.txt': 'line1\r\nline2',
+        '/src/lf.txt': 'lineA\nlineB',
+    });
+
+    const writer = new StringWriter();
+    await mergeFiles(['/src/crlf.txt', '/src/lf.txt'], writer, formatter, '/src', false, fs);
+
+    expect(visualizeLineEndings(writer.content)).toMatchInlineSnapshot(`
+"// ====================[CRLF]
+// merch::setup: {"basePath":"/src"}[CRLF]
+// merch::existing-file: {"path":"crlf.txt","idx":0,"hash":"d14a91a6d1c6ee83bf0c774ebecbee6d8b393b395dae29eea839c354d6fba9c0"}[CRLF]
+// merch::existing-file: {"path":"lf.txt","idx":1,"hash":"f87fce3cef9a3a29f9b8ddd29d8e921b90b49021ef6382056200cb7591df9ee4"}[CRLF]
+// ====================[CRLF]
+[CRLF]
+// merch::file: {"path":"crlf.txt","idx":0}:[CRLF]
+line1[CRLF]
+line2[CRLF]
+// merch::file: {"path":"lf.txt","idx":1,"eol":"\\n"}:[CRLF]
+lineA[CRLF]
+lineB[CRLF]
+"
+`);
+
+    // Simulate editing content. 
+    // Even if we write everything with LF in the merch file string (because it's a JS string),
+    // the splitter should respect the eol property.
+    
+    const merchContent = `// ====================
+// merch::setup: {"basePath":"/src"}
+// merch::existing-file: {"path":"crlf.txt","idx":0,"hash":"hash1"}
+// merch::existing-file: {"path":"lf.txt","idx":1,"hash":"hash2","eol":"\\n"}
+// ====================
+
+// merch::file: {"path":"crlf.txt","idx":0}:
+line1_mod
+line2
+// merch::file: {"path":"lf.txt","idx":1,"eol":"\\n"}:
+lineA_mod
+lineB
+`;
+    
+    await splitContent(merchContent, false, fs, () => {}, false);
+
+    const content1 = await fs.readFile('/src/crlf.txt');
+    // First file didn't specify EOL, so it inherits from the merch file style (which is LF in the string above)
+    expect(visualizeLineEndings(content1)).toMatchInlineSnapshot(`
+"line1_mod[LF]
+line2"
+`);
+
+    const content2 = await fs.readFile('/src/lf.txt');
+    // Second file has `eol: \n`, so it should be LF.
+    expect(visualizeLineEndings(content2)).toMatchInlineSnapshot(`
+"lineA_mod[LF]
+lineB"
+`);
+});
+
+test('mixed input files (first is LF)', async () => {
+    const fs = new MemoryFileSystem({
+        '/src/lf.txt': 'lineA\nlineB',
+        '/src/crlf.txt': 'line1\r\nline2',
+    });
+
+    const writer = new StringWriter();
+    await mergeFiles(['/src/lf.txt', '/src/crlf.txt'], writer, formatter, '/src', false, fs);
+
+    expect(visualizeLineEndings(writer.content)).toMatchInlineSnapshot(`
+"// ====================[LF]
+// merch::setup: {"basePath":"/src"}[LF]
+// merch::existing-file: {"path":"lf.txt","idx":0,"hash":"f87fce3cef9a3a29f9b8ddd29d8e921b90b49021ef6382056200cb7591df9ee4"}[LF]
+// merch::existing-file: {"path":"crlf.txt","idx":1,"hash":"d14a91a6d1c6ee83bf0c774ebecbee6d8b393b395dae29eea839c354d6fba9c0"}[LF]
+// ====================[LF]
+[LF]
+// merch::file: {"path":"lf.txt","idx":0}:[LF]
+lineA[LF]
+lineB[LF]
+// merch::file: {"path":"crlf.txt","idx":1,"eol":"\\r\\n"}:[LF]
+line1[LF]
+line2[LF]
+"
+`);
+
+    // Let's verify that if we apply this back, it preserves CRLF for the second file
+    // even if the merch file is all LF.
+    const merchContent = writer.content.replace('line1', 'line1_mod');
+    // writer.content is already LF based.
+    
+    await splitContent(merchContent, false, fs, () => {});
+
+    const content1 = await fs.readFile('/src/lf.txt');
+    expect(visualizeLineEndings(content1)).toMatchInlineSnapshot(`
+"lineA[LF]
+lineB"
+`);
+
+    const content2 = await fs.readFile('/src/crlf.txt');
+    // Should be normalized back to CRLF
+    expect(visualizeLineEndings(content2)).toMatchInlineSnapshot(`
+"line1_mod[CRLF]
+line2"
+`);
+});
+
+test('respects merch file EOL style when eol property is missing', async () => {
+    const fs = new MemoryFileSystem({
+        '/src/file.txt': 'line1\nline2',
+    });
+
+    // Construct merch content with CRLF
+    const merchContentCRLF = [
+        '// ====================',
+        '// merch::setup: {"basePath":"/src"}',
+        '// merch::existing-file: {"path":"file.txt","idx":0,"hash":"683376e290829b482c2655745caffa7a1dccfa10afaa62dac2b42dd6c68d0f83"}',
+        '// ====================',
+        '',
+        '// merch::file: {"path":"file.txt","idx":0}:',
+        'line1_mod',
+        'line2_mod',
+        ''
+    ].join('\r\n');
+
+    await splitContent(merchContentCRLF, false, fs, () => {});
+
+    const content = await fs.readFile('/src/file.txt');
+    expect(visualizeLineEndings(content)).toMatchInlineSnapshot(`
+"line1_mod[CRLF]
+line2_mod"
+`);
+
+    // Construct merch content with LF
+    const merchContentLF = [
+        '// ====================',
+        '// merch::setup: {"basePath":"/src"}',
+        '// merch::existing-file: {"path":"file.txt","idx":0,"hash":"683376e290829b482c2655745caffa7a1dccfa10afaa62dac2b42dd6c68d0f83"}',
+        '// ====================',
+        '',
+        '// merch::file: {"path":"file.txt","idx":0}:',
+        'line1_mod2',
+        'line2_mod2',
+        ''
+    ].join('\n');
+
+    // Disable hash check because file on disk changed
+    await splitContent(merchContentLF, false, fs, () => {}, false);
+
+    const content2 = await fs.readFile('/src/file.txt');
+    expect(visualizeLineEndings(content2)).toMatchInlineSnapshot(`
+"line1_mod2[LF]
+line2_mod2"
+`);
+});
+
+test('respects eol property in merch::file header', async () => {
+    const fs = new MemoryFileSystem({
+        '/src/file.txt': 'line1\nline2',
+    });
+
+    // Merch content has LF, but header says CRLF
+    const merchContent = [
+        '// ====================',
+        '// merch::setup: {"basePath":"/src"}',
+        '// merch::existing-file: {"path":"file.txt","idx":0,"hash":"683376e290829b482c2655745caffa7a1dccfa10afaa62dac2b42dd6c68d0f83"}',
+        '// ====================',
+        '',
+        '// merch::file: {"path":"file.txt","idx":0,"eol":"\\r\\n"}:',
+        'line1_mod',
+        'line2_mod',
+        ''
+    ].join('\n');
+
+    await splitContent(merchContent, false, fs, () => {});
+
+    const content = await fs.readFile('/src/file.txt');
+    expect(visualizeLineEndings(content)).toMatchInlineSnapshot(`
+"line1_mod[CRLF]
+line2_mod"
+`);
+
+    // Merch content has CRLF, but header says LF
+    const merchContent2 = [
+        '// ====================',
+        '// merch::setup: {"basePath":"/src"}',
+        '// merch::existing-file: {"path":"file.txt","idx":0,"hash":"683376e290829b482c2655745caffa7a1dccfa10afaa62dac2b42dd6c68d0f83"}',
+        '// ====================',
+        '',
+        '// merch::file: {"path":"file.txt","idx":0,"eol":"\\n"}:',
+        'line1_mod2',
+        'line2_mod2',
+        ''
+    ].join('\r\n');
+
+    // Disable hash check
+    await splitContent(merchContent2, false, fs, () => {}, false);
+
+    const content2 = await fs.readFile('/src/file.txt');
+    expect(visualizeLineEndings(content2)).toMatchInlineSnapshot(`
+"line1_mod2[LF]
+line2_mod2"
 `);
 });

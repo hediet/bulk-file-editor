@@ -1,5 +1,5 @@
 import { ParsedMerchDoc } from './models';
-import { computeHash } from './utils';
+import { computeHash, normalizeLineEndings } from './utils';
 import { IFileSystem } from './fileSystem';
 
 export interface ActionSource {
@@ -78,13 +78,18 @@ export async function buildActions(doc: ParsedMerchDoc, fs: IFileSystem, checkHa
             }
 
             if (updatedFileInfo.content !== null) {
-                const newContentHash = computeHash(Buffer.from(updatedFileInfo.content));
+                let contentToWrite = updatedFileInfo.content;
+                if (updatedFileInfo.eol) {
+                    contentToWrite = normalizeLineEndings(contentToWrite, updatedFileInfo.eol);
+                }
+
+                const newContentHash = computeHash(Buffer.from(contentToWrite));
                 if (hash !== newContentHash) {
                     // Write to the old path before renaming it
                     actions.push({ 
                         type: 'write', 
                         path: oldPath, 
-                        content: updatedFileInfo.content,
+                        content: contentToWrite,
                         source: updatedFileInfo.headerOffsetRange
                     });
                 }
@@ -104,10 +109,15 @@ export async function buildActions(doc: ParsedMerchDoc, fs: IFileSystem, checkHa
         if (!existing) {
             const newPath = fs.path.resolve(basePath, updatedFileInfo.newPath);
             if (updatedFileInfo.content !== null) {
+                let contentToWrite = updatedFileInfo.content;
+                if (updatedFileInfo.eol) {
+                    contentToWrite = normalizeLineEndings(contentToWrite, updatedFileInfo.eol);
+                }
+
                 actions.push({
                     type: 'write',
                     path: newPath,
-                    content: updatedFileInfo.content,
+                    content: contentToWrite,
                     source: updatedFileInfo.headerOffsetRange
                 });
             }

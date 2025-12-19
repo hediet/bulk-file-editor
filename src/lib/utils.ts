@@ -57,3 +57,27 @@ export function launchDefaultEditor(filePath: string): void {
         throw new Error(`Editor exited with status ${result.status}`);
     }
 }
+
+export type LineEnding = '\n' | '\r\n';
+
+export function detectLineEnding(content: string): LineEnding | undefined {
+    const crlf = content.indexOf('\r\n');
+    const lf = content.indexOf('\n');
+
+    if (crlf !== -1) {
+        // Simple heuristic: if we find CRLF, we assume CRLF unless it's very mixed.
+        // But for now let's just check if CRLF is present.
+        return '\r\n';
+    }
+    if (lf !== -1) return '\n';
+    return undefined;
+}
+
+export function normalizeLineEndings(content: string, lineEnding: string): string {
+    if (lineEnding === '\r\n') {
+        return content.replace(/\r?\n/g, '\r\n');
+    } else if (lineEnding === '\n') {
+        return content.replace(/\r\n/g, '\n');
+    }
+    return content;
+}

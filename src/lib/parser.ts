@@ -107,7 +107,8 @@ export function parseMerchDoc(content: string): ParsedMerchDoc {
                             idx,
                             newPath: data.path,
                             content: null,
-                            headerOffsetRange: { start: matchStart, endExclusive: matchEnd }
+                            headerOffsetRange: { start: matchStart, endExclusive: matchEnd },
+                            eol: data.eol
                         });
 
                         if (hasColon) {

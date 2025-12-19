@@ -10,6 +10,7 @@ export interface UpdatedFileInfo {
     newPath: string;
     content: string | null;
     headerOffsetRange: { start: number, endExclusive: number };
+    eol?: string;
 }
 
 export interface MerchDiagnostic {
