@@ -1,3 +1,1 @@
-class Test {
-    // hello world
-}
+1

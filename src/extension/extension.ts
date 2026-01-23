@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
-import { splitContent, mergeFiles, IFileSystem, IPath, LineFormatter, IWriter, HashMismatchError, getMerchFileExtension, parseMerchDoc, analyzeMerchDoc, foldFile, unfoldFile, isFolded, getFileAtOffset } from '../lib';
+import { splitContent, mergeFiles, IFileSystem, IPath, LineFormatter, IWriter, HashMismatchError, getMerchFileExtension, parseMerchDoc, analyzeMerchDoc, foldFile, unfoldFile, isFolded, getFileAtOffset, buildActions, describeAction } from '../lib';
 
 class VSCodeFileSystem implements IFileSystem {
     readonly path: IPath = path;
@@ -257,7 +257,9 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         const doc = editor.document;
-        // We don't necessarily need to save, we can use the content in the editor
+        if (doc.isDirty) {
+            await doc.save();
+        }
         const content = doc.getText();
 
         const apply = async (checkHash: boolean) => {
@@ -297,6 +299,52 @@ export function activate(context: vscode.ExtensionContext) {
         };
 
         await apply(true);
+    }));
+
+    // Apply with confirmation (Ctrl+Enter)
+    context.subscriptions.push(vscode.commands.registerCommand('merch.applyWithConfirmation', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) {
+            vscode.window.showErrorMessage('No active editor');
+            return;
+        }
+
+        const doc = editor.document;
+        if (!doc.fileName.includes('.merch.')) {
+            return;
+        }
+
+        if (doc.isDirty) {
+            await doc.save();
+        }
+        const content = doc.getText();
+
+        try {
+            const merchDoc = parseMerchDoc(content);
+            const actions = await buildActions(merchDoc, fs, false);
+
+            if (actions.length === 0) {
+                vscode.window.showInformationMessage('No changes to apply');
+                return;
+            }
+
+            // Build summary message
+            const actionDescriptions = actions.map(a => describeAction(a));
+            const summary = actionDescriptions.slice(0, 10).join('\n');
+            const more = actions.length > 10 ? `\n... and ${actions.length - 10} more` : '';
+
+            const selection = await vscode.window.showInformationMessage(
+                `Apply ${actions.length} change${actions.length > 1 ? 's' : ''}?\n\n${summary}${more}`,
+                { modal: true },
+                'Apply'
+            );
+
+            if (selection === 'Apply') {
+                await vscode.commands.executeCommand('merch.apply');
+            }
+        } catch (e: any) {
+            vscode.window.showErrorMessage(`Error: ${e.message}`);
+        }
     }));
 
     // Edit folder paths only (without content)

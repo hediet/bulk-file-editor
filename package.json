@@ -61,7 +61,15 @@
           "group": "navigation"
         }
       ]
-    }
+    },
+    "keybindings": [
+      {
+        "command": "merch.applyWithConfirmation",
+        "key": "ctrl+enter",
+        "mac": "cmd+enter",
+        "when": "editorTextFocus && resourceFilename =~ /\\.merch\\..+$/"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run build",
