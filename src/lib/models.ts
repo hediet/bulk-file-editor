@@ -13,6 +13,13 @@ export interface UpdatedFileInfo {
     eol?: string;
 }
 
+export interface NewFileInfo {
+    newPath: string;
+    content: string | null;
+    headerOffsetRange: { start: number, endExclusive: number };
+    eol?: string;
+}
+
 export interface MerchDiagnostic {
     range: { start: number, endExclusive: number };
     message: string;
@@ -22,6 +29,7 @@ export interface MerchDiagnostic {
 export interface ParsedMerchDoc {
     existingFiles: ExistingFileInfo[];
     updatedFiles: Map<number, UpdatedFileInfo>;
+    newFiles: NewFileInfo[];
     basePath: string;
     setupHeaderRange?: { start: number, endExclusive: number };
     diagnostics: MerchDiagnostic[];

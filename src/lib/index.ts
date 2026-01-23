@@ -1,5 +1,6 @@
 export * from './actions';
 export * from './fileSystem';
+export * from './folding';
 export * from './memoryFileSystem';
 export * from './merger';
 export * from './models';

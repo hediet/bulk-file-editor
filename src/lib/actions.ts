@@ -52,7 +52,16 @@ export async function buildActions(doc: ParsedMerchDoc, fs: IFileSystem, checkHa
         const oldPath = fs.path.resolve(basePath, existingFileInfo.path);
         const hash = existingFileInfo.hash;
         
-        if (checkHash) {
+        const updatedFileInfo = updatedFiles.get(existingFileInfo.idx);
+        
+        // Determine if we need hash check:
+        // - For deletes (no updatedFileInfo): always check hash
+        // - For folded renames (updatedFileInfo with null content): skip hash check
+        // - For content updates: check hash
+        const isFoldedRename = updatedFileInfo && updatedFileInfo.content === null;
+        const needsHashCheck = checkHash && !isFoldedRename;
+        
+        if (needsHashCheck) {
             if (await fs.exists(oldPath) && await fs.isFile(oldPath)) {
                 const content = await fs.readFile(oldPath);
                 const currentHash = computeHash(Buffer.from(content));
@@ -65,8 +74,6 @@ export async function buildActions(doc: ParsedMerchDoc, fs: IFileSystem, checkHa
                 throw new HashMismatchError(existingFileInfo.path);
             }
         }
-
-        const updatedFileInfo = updatedFiles.get(existingFileInfo.idx);
         
         if (updatedFileInfo) {
             const newPath = fs.path.resolve(basePath, updatedFileInfo.newPath);
@@ -121,6 +128,24 @@ export async function buildActions(doc: ParsedMerchDoc, fs: IFileSystem, checkHa
                     source: updatedFileInfo.headerOffsetRange
                 });
             }
+        }
+    }
+
+    // Handle new files from newFiles array (files without idx)
+    for (const newFileInfo of doc.newFiles) {
+        const newPath = fs.path.resolve(basePath, newFileInfo.newPath);
+        if (newFileInfo.content !== null) {
+            let contentToWrite = newFileInfo.content;
+            if (newFileInfo.eol) {
+                contentToWrite = normalizeLineEndings(contentToWrite, newFileInfo.eol);
+            }
+
+            actions.push({
+                type: 'write',
+                path: newPath,
+                content: contentToWrite,
+                source: newFileInfo.headerOffsetRange
+            });
         }
     }
 

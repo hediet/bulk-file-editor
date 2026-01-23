@@ -32,6 +32,10 @@
         "title": "Edit folder as single file"
       },
       {
+        "command": "merch.editFolderPaths",
+        "title": "Edit folder paths as single file"
+      },
+      {
         "command": "merch.apply",
         "title": "Apply and Close",
         "icon": "$(check)"
@@ -41,6 +45,11 @@
       "explorer/context": [
         {
           "command": "merch.editFolder",
+          "when": "explorerResourceIsFolder",
+          "group": "modification"
+        },
+        {
+          "command": "merch.editFolderPaths",
           "when": "explorerResourceIsFolder",
           "group": "modification"
         }

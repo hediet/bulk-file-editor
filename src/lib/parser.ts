@@ -1,4 +1,4 @@
-import { ExistingFileInfo, ParsedMerchDoc, UpdatedFileInfo, MerchDiagnostic } from './models';
+import { ExistingFileInfo, ParsedMerchDoc, UpdatedFileInfo, MerchDiagnostic, NewFileInfo } from './models';
 
 export interface MerchLine {
     command: string;
@@ -33,16 +33,38 @@ export function parseMerchDoc(content: string): ParsedMerchDoc {
 
     const existingFiles: ExistingFileInfo[] = [];
     const updatedFiles = new Map<number, UpdatedFileInfo>();
+    const newFiles: NewFileInfo[] = [];
     let basePath: string | null = null;
     let setupHeaderRange: { start: number, endExclusive: number } | undefined;
     const diagnostics: MerchDiagnostic[] = [];
 
-    interface ExpectContentInfo {
-        contentEnd: number;
-        fileIdx: number;
-    }
+    /**
+     * Tracks which file should receive the content block that follows a `merch::file:` header.
+     * - `updated`: An existing file being modified (identified by its `idx` from the merch doc)
+     * - `new`: A newly created file (identified by its position in the `newFiles` array)
+     */
+    type PendingContent = {
+        contentStart: number;
+        target:
+            | { type: 'updated'; idx: number }
+            | { type: 'new'; arrayIndex: number };
+    };
 
-    let lastMatch: ExpectContentInfo | null = null;
+    let pendingContent: PendingContent | null = null;
+
+    function assignContent(content: string, target: PendingContent['target']): void {
+        if (target.type === 'updated') {
+            const fileInfo = updatedFiles.get(target.idx);
+            if (fileInfo) {
+                fileInfo.content = content;
+            }
+        } else {
+            const newFileInfo = newFiles[target.arrayIndex];
+            if (newFileInfo) {
+                newFileInfo.content = content;
+            }
+        }
+    }
 
     let match: RegExpExecArray | null;
     while ((match = merchHeaderRegex.exec(content)) !== null) {
@@ -50,21 +72,18 @@ export function parseMerchDoc(content: string): ParsedMerchDoc {
         const matchStart = match.index;
         const matchEnd = match.index + fullLine.length;
 
-        // Set new content for the previous file if we were expecting it
-        if (lastMatch) {
+        // Assign content to the previous file if we were expecting it
+        if (pendingContent) {
             let end = matchStart;
             // Trim trailing newline of the previous block if it exists right before this instruction
             if (content[end - 1] === '\n') end--;
             if (content[end - 1] === '\r') end--;
 
-            const textInBetween = content.substring(lastMatch.contentEnd, end);
-            const fileInfo = updatedFiles.get(lastMatch.fileIdx);
-            if (fileInfo) {
-                fileInfo.content = textInBetween;
-            }
+            const textInBetween = content.substring(pendingContent.contentStart, end);
+            assignContent(textInBetween, pendingContent.target);
         }
 
-        lastMatch = null;
+        pendingContent = null;
 
         const parsed = tryParseMerchLine(fullLine);
 
@@ -101,31 +120,54 @@ export function parseMerchDoc(content: string): ParsedMerchDoc {
                     }
                     break;
                 case 'file':
-                    if (typeof data.idx === 'number' && data.path) {
-                        const idx = data.idx;
-                        updatedFiles.set(idx, {
-                            idx,
-                            newPath: data.path,
-                            content: null,
-                            headerOffsetRange: { start: matchStart, endExclusive: matchEnd },
-                            eol: data.eol
-                        });
+                    if (data.path) {
+                        if (typeof data.idx === 'number') {
+                            // Existing file update
+                            const idx = data.idx;
+                            updatedFiles.set(idx, {
+                                idx,
+                                newPath: data.path,
+                                content: null,
+                                headerOffsetRange: { start: matchStart, endExclusive: matchEnd },
+                                eol: data.eol
+                            });
 
-                        if (hasColon) {
-                            let contentStart = matchEnd;
-                            // Check if next char is newline
-                            if (content[contentStart] === '\r') contentStart++;
-                            if (content[contentStart] === '\n') contentStart++;
+                            if (hasColon) {
+                                let contentStart = matchEnd;
+                                if (content[contentStart] === '\r') contentStart++;
+                                if (content[contentStart] === '\n') contentStart++;
 
-                            lastMatch = {
-                                contentEnd: contentStart,
-                                fileIdx: idx,
+                                pendingContent = {
+                                    contentStart,
+                                    target: { type: 'updated', idx },
+                                };
+                            }
+                        } else {
+                            // New file (no idx)
+                            const newFileInfo: NewFileInfo = {
+                                newPath: data.path,
+                                content: null,
+                                headerOffsetRange: { start: matchStart, endExclusive: matchEnd },
+                                eol: data.eol
                             };
+                            const arrayIndex = newFiles.length;
+                            newFiles.push(newFileInfo);
+
+                            if (hasColon) {
+                                let contentStart = matchEnd;
+                                if (content[contentStart] === '\r') contentStart++;
+                                if (content[contentStart] === '\n') contentStart++;
+
+                                pendingContent = {
+                                    contentStart,
+                                    target: { type: 'new', arrayIndex },
+                                };
+                            }
                         }
                     } else {
                         diagnostics.push({
                             range: { start: matchStart, endExclusive: matchEnd },
-                            message: "Invalid file data",
+                            message: "Invalid file data: missing path",
                             severity: 'error'
                         });
                     }
@@ -159,15 +201,24 @@ export function parseMerchDoc(content: string): ParsedMerchDoc {
     }
 
     // Handle the last file content if it goes until the end of the string
-    if (lastMatch) {
+    if (pendingContent) {
         let end = content.length;
         if (content[end - 1] === '\n') end--;
         if (content[end - 1] === '\r') end--;
 
-        const textInBetween = content.substring(lastMatch.contentEnd, end);
-        const fileInfo = updatedFiles.get(lastMatch.fileIdx);
-        if (fileInfo) {
-            fileInfo.content = textInBetween;
+        const textInBetween = content.substring(pendingContent.contentStart, end);
+        assignContent(textInBetween, pendingContent.target);
+    }
+
+    // Warn about idx values that don't have a corresponding existing-file
+    const existingIdxSet = new Set(existingFiles.map(f => f.idx));
+    for (const [idx, fileInfo] of updatedFiles) {
+        if (!existingIdxSet.has(idx)) {
+            diagnostics.push({
+                range: fileInfo.headerOffsetRange,
+                message: `No existing-file found with idx ${idx}`,
+                severity: 'warning'
+            });
         }
     }
 
@@ -189,6 +240,7 @@ export function parseMerchDoc(content: string): ParsedMerchDoc {
              return {
                 existingFiles,
                 updatedFiles,
+                newFiles,
                 basePath: basePath || ".",
                 setupHeaderRange,
                 diagnostics,
@@ -200,6 +252,7 @@ export function parseMerchDoc(content: string): ParsedMerchDoc {
     return {
         existingFiles,
         updatedFiles,
+        newFiles,
         basePath,
         setupHeaderRange,
         diagnostics,

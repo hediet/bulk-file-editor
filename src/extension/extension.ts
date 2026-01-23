@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
-import { splitContent, mergeFiles, IFileSystem, IPath, LineFormatter, IWriter, HashMismatchError, getMerchFileExtension, parseMerchDoc, analyzeMerchDoc } from '../lib';
+import { splitContent, mergeFiles, IFileSystem, IPath, LineFormatter, IWriter, HashMismatchError, getMerchFileExtension, parseMerchDoc, analyzeMerchDoc, foldFile, unfoldFile, isFolded, getFileAtOffset } from '../lib';
 
 class VSCodeFileSystem implements IFileSystem {
     readonly path: IPath = path;
@@ -298,6 +298,169 @@ export function activate(context: vscode.ExtensionContext) {
 
         await apply(true);
     }));
+
+    // Edit folder paths only (without content)
+    context.subscriptions.push(vscode.commands.registerCommand('merch.editFolderPaths', async (uri: vscode.Uri) => {
+        if (!uri) {
+            vscode.window.showErrorMessage('No folder selected');
+            return;
+        }
+
+        const folderPath = uri.fsPath;
+        const folderName = path.basename(folderPath);
+        const randomId = Math.random().toString(36).substring(7);
+
+        try {
+            const files = await listFilesRecursively(uri);
+            const filePaths = files.map(f => f.fsPath);
+
+            const ext = getMerchFileExtension(filePaths);
+            const tempFileName = `${folderName}-${randomId}.merch${ext}`;
+            const tempFilePath = path.join(os.tmpdir(), tempFileName);
+
+            const writer = new StringWriter();
+            const formatter = new LineFormatter('// ', '');
+            
+            // withoutContent: true - creates folded file entries
+            await mergeFiles(filePaths, writer, formatter, folderPath, true, fs);
+            
+            await fs.writeFile(tempFilePath, writer.content);
+            
+            const doc = await vscode.workspace.openTextDocument(tempFilePath);
+            await vscode.window.showTextDocument(doc);
+        } catch (e: any) {
+            vscode.window.showErrorMessage(`Error creating merch file: ${e.message}`);
+        }
+    }));
+
+    // Code action provider for fold/unfold toggle
+    context.subscriptions.push(vscode.languages.registerCodeActionsProvider(
+        { pattern: '**/*.merch.*' },
+        new FoldUnfoldCodeActionProvider(fs),
+        { providedCodeActionKinds: [vscode.CodeActionKind.RefactorRewrite] }
+    ));
+
+    // Fold file command
+    context.subscriptions.push(vscode.commands.registerCommand('merch.foldFile', async (uri: vscode.Uri, idx: number) => {
+        const document = await vscode.workspace.openTextDocument(uri);
+        const content = document.getText();
+        
+        const doc = parseMerchDoc(content);
+        const file = doc.updatedFiles.get(idx);
+        if (!file) {
+            vscode.window.showErrorMessage(`File with idx ${idx} not found`);
+            return;
+        }
+
+        if (isFolded(file)) {
+            return; // Already folded
+        }
+
+        const result = await foldFile(content, file, fs, doc.basePath);
+        
+        if (result.hadModifiedContent) {
+            const selection = await vscode.window.showWarningMessage(
+                'The file content has been modified. What would you like to do?',
+                'Write to disk first',
+                'Discard changes'
+            );
+            
+            if (!selection) {
+                return; // Cancelled
+            }
+            
+            if (selection === 'Write to disk first') {
+                // Apply the current merch content first to write the modified content
+                try {
+                    await splitContent(content, false, fs);
+                } catch (e: any) {
+                    vscode.window.showErrorMessage(`Error writing file: ${e.message}`);
+                    return;
+                }
+            }
+            // If 'Discard changes', we just fold without writing
+        }
+
+        // Apply the fold edit
+        const edit = new vscode.WorkspaceEdit();
+        const fullRange = new vscode.Range(
+            document.positionAt(0),
+            document.positionAt(content.length)
+        );
+        edit.replace(uri, fullRange, result.newContent);
+        await vscode.workspace.applyEdit(edit);
+    }));
+
+    // Unfold file command
+    context.subscriptions.push(vscode.commands.registerCommand('merch.unfoldFile', async (uri: vscode.Uri, idx: number) => {
+        const document = await vscode.workspace.openTextDocument(uri);
+        const content = document.getText();
+        
+        const doc = parseMerchDoc(content);
+        const file = doc.updatedFiles.get(idx);
+        if (!file) {
+            vscode.window.showErrorMessage(`File with idx ${idx} not found`);
+            return;
+        }
+
+        if (!isFolded(file)) {
+            return; // Already unfolded
+        }
+
+        try {
+            const result = await unfoldFile(content, file, fs, doc.basePath);
+            
+            const edit = new vscode.WorkspaceEdit();
+            const fullRange = new vscode.Range(
+                document.positionAt(0),
+                document.positionAt(content.length)
+            );
+            edit.replace(uri, fullRange, result.newContent);
+            await vscode.workspace.applyEdit(edit);
+        } catch (e: any) {
+            vscode.window.showErrorMessage(`Error unfolding file: ${e.message}`);
+        }
+    }));
+}
+
+class FoldUnfoldCodeActionProvider implements vscode.CodeActionProvider {
+    constructor(private readonly _fs: IFileSystem) {}
+
+    async provideCodeActions(
+        document: vscode.TextDocument,
+        range: vscode.Range | vscode.Selection,
+    ): Promise<vscode.CodeAction[] | undefined> {
+        const content = document.getText();
+        const offset = document.offsetAt(range.start);
+
+        const fileAtOffset = getFileAtOffset(content, offset);
+        if (!fileAtOffset || fileAtOffset.type !== 'updated') {
+            return undefined;
+        }
+
+        const file = fileAtOffset.file;
+        const actions: vscode.CodeAction[] = [];
+
+        if (isFolded(file)) {
+            const action = new vscode.CodeAction('Unfold file', vscode.CodeActionKind.RefactorRewrite);
+            action.command = {
+                command: 'merch.unfoldFile',
+                title: 'Unfold file',
+                arguments: [document.uri, file.idx]
+            };
+            actions.push(action);
+        } else {
+            const action = new vscode.CodeAction('Fold file', vscode.CodeActionKind.RefactorRewrite);
+            action.command = {
+                command: 'merch.foldFile',
+                title: 'Fold file',
+                arguments: [document.uri, file.idx]
+            };
+            actions.push(action);
+        }
+
+        return actions;
+    }
 }
 
 async function listFilesRecursively(folderUri: vscode.Uri): Promise<vscode.Uri[]> {

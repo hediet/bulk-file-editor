@@ -2,6 +2,8 @@ import { MemoryFileSystem } from './memoryFileSystem';
 import { mergeFiles, IWriter } from './merger';
 import { splitContent } from './splitter';
 import { LineFormatter } from './models';
+import { parseMerchDoc } from './parser';
+import { foldFile, unfoldFile, isFolded, getFileAtOffset } from './folding';
 
 class StringWriter implements IWriter {
     public content = '';
@@ -574,5 +576,373 @@ line2_mod"
     expect(visualizeLineEndings(content2)).toMatchInlineSnapshot(`
 "line1_mod2[LF]
 line2_mod2"
+`);
+});
+
+test('add new file without idx', async () => {
+    const fs = new MemoryFileSystem({
+        '/src/existing.txt': 'existing content',
+    });
+
+    // Create a merch document manually and add a new file
+    const merchContent = `// ====================
+// merch::setup: {"basePath":"/src"}
+// merch::existing-file: {"path":"existing.txt","idx":0,"hash":"131fc6fe7a8464937c72db19863b153ad1ac1b534889ca7dbfc69cfd08088335"}
+// ====================
+
+// merch::file: {"path":"existing.txt","idx":0}:
+existing content
+// merch::file: {"path":"newfile.txt"}:
+new file content
+`;
+
+    const logs: string[] = [];
+    await splitContent(merchContent, false, fs, (msg) => logs.push(msg));
+
+    expect(logs).toMatchInlineSnapshot(`
+[
+  "Update "/src/newfile.txt"",
+]
+`);
+    expect(fs.toJson()).toMatchInlineSnapshot(`
+{
+  "/src/existing.txt": "existing content",
+  "/src/newfile.txt": "new file content",
+}
+`);
+});
+
+test('add multiple new files without idx', async () => {
+    const fs = new MemoryFileSystem({});
+
+    const merchContent = `// ====================
+// merch::setup: {"basePath":"/src"}
+// ====================
+
+// merch::file: {"path":"file1.txt"}:
+content 1
+// merch::file: {"path":"file2.txt"}:
+content 2
+// merch::file: {"path":"subdir/file3.txt"}:
+content 3
+`;
+
+    const logs: string[] = [];
+    await splitContent(merchContent, false, fs, (msg) => logs.push(msg));
+
+    expect(logs).toMatchInlineSnapshot(`
+[
+  "Update "/src/file1.txt"",
+  "Update "/src/file2.txt"",
+  "Update "/src/subdir/file3.txt"",
+]
+`);
+    expect(fs.toJson()).toMatchInlineSnapshot(`
+{
+  "/src/file1.txt": "content 1",
+  "/src/file2.txt": "content 2",
+  "/src/subdir/file3.txt": "content 3",
+}
+`);
+});
+
+test('warns when idx has no corresponding existing-file', () => {
+    const merchContent = `// ====================
+// merch::setup: {"basePath":"/src"}
+// merch::existing-file: {"path":"file.txt","idx":0,"hash":"abc"}
+// ====================
+
+// merch::file: {"path":"file.txt","idx":0}:
+content
+// merch::file: {"path":"other.txt","idx":99}:
+orphan content
+`;
+
+    const result = parseMerchDoc(merchContent);
+
+    expect(result.diagnostics).toMatchInlineSnapshot(`
+[
+  {
+    "message": "No existing-file found with idx 99",
+    "range": {
+      "endExclusive": 251,
+      "start": 205,
+    },
+    "severity": "warning",
+  },
+]
+`);
+});
+
+test('isFolded returns true for null content', () => {
+    const file = { idx: 0, newPath: 'test.txt', content: null, headerOffsetRange: { start: 0, endExclusive: 10 } };
+    expect(isFolded(file)).toBe(true);
+});
+
+test('isFolded returns false for non-null content', () => {
+    const file = { idx: 0, newPath: 'test.txt', content: 'hello', headerOffsetRange: { start: 0, endExclusive: 10 } };
+    expect(isFolded(file)).toBe(false);
+});
+
+test('foldFile removes content and detects modification', async () => {
+    const fs = new MemoryFileSystem({
+        '/src/file.txt': 'original content',
+    });
+
+    const merchContent = `// ====================
+// merch::setup: {"basePath":"/src"}
+// merch::existing-file: {"path":"file.txt","idx":0,"hash":"abc123"}
+// ====================
+
+// merch::file: {"path":"file.txt","idx":0}:
+modified content
+`;
+
+    const doc = parseMerchDoc(merchContent);
+    const file = doc.updatedFiles.get(0)!;
+    
+    const result = await foldFile(merchContent, file, fs, '/src');
+    
+    expect(result.hadModifiedContent).toBe(true);
+    expect(result.newContent).toMatchInlineSnapshot(`
+"// ====================
+// merch::setup: {"basePath":"/src"}
+// merch::existing-file: {"path":"file.txt","idx":0,"hash":"abc123"}
+// ====================
+
+// merch::file: {"path":"file.txt","idx":0}
+"
+`);
+});
+
+test('foldFile on already folded file returns same content', async () => {
+    const fs = new MemoryFileSystem({
+        '/src/file.txt': 'content',
+    });
+
+    const merchContent = `// ====================
+// merch::setup: {"basePath":"/src"}
+// merch::existing-file: {"path":"file.txt","idx":0,"hash":"abc123"}
+// ====================
+
+// merch::file: {"path":"file.txt","idx":0}
+`;
+
+    const doc = parseMerchDoc(merchContent);
+    const file = doc.updatedFiles.get(0)!;
+    
+    const result = await foldFile(merchContent, file, fs, '/src');
+    
+    expect(result.hadModifiedContent).toBe(false);
+    expect(result.newContent).toBe(merchContent);
+});
+
+test('unfoldFile reads content from disk', async () => {
+    const fs = new MemoryFileSystem({
+        '/src/file.txt': 'disk content',
+    });
+
+    const merchContent = `// ====================
+// merch::setup: {"basePath":"/src"}
+// merch::existing-file: {"path":"file.txt","idx":0,"hash":"abc123"}
+// ====================
+
+// merch::file: {"path":"file.txt","idx":0}
+`;
+
+    const doc = parseMerchDoc(merchContent);
+    const file = doc.updatedFiles.get(0)!;
+    
+    const result = await unfoldFile(merchContent, file, fs, '/src');
+    
+    expect(result.newContent).toMatchInlineSnapshot(`
+"// ====================
+// merch::setup: {"basePath":"/src"}
+// merch::existing-file: {"path":"file.txt","idx":0,"hash":"abc123"}
+// ====================
+
+// merch::file: {"path":"file.txt","idx":0}:
+disk content
+"
+`);
+});
+
+test('folded rename skips hash check', async () => {
+    const fs = new MemoryFileSystem({
+        '/src/old.txt': 'changed content on disk',
+    });
+
+    // Hash doesn't match current content, but since it's folded, rename should work
+    const merchContent = `// ====================
+// merch::setup: {"basePath":"/src"}
+// merch::existing-file: {"path":"old.txt","idx":0,"hash":"stale_hash_from_before"}
+// ====================
+
+// merch::file: {"path":"new.txt","idx":0}
+`;
+
+    const logs: string[] = [];
+    // This should NOT throw HashMismatchError because it's a folded rename
+    await splitContent(merchContent, false, fs, (msg) => logs.push(msg));
+
+    expect(logs).toMatchInlineSnapshot(`
+[
+  "Rename "/src/old.txt" to "/src/new.txt"",
+]
+`);
+    expect(fs.toJson()).toMatchInlineSnapshot(`
+{
+  "/src/new.txt": "changed content on disk",
+}
+`);
+});
+
+test('getFileAtOffset finds file at offset', () => {
+    const merchContent = `// ====================
+// merch::setup: {"basePath":"/src"}
+// merch::existing-file: {"path":"file.txt","idx":0,"hash":"abc"}
+// ====================
+
+// merch::file: {"path":"file.txt","idx":0}:
+content
+`;
+
+    const doc = parseMerchDoc(merchContent);
+    const file = doc.updatedFiles.get(0)!;
+    // Use an offset within the header range
+    const offset = file.headerOffsetRange.start + 5;
+    const result = getFileAtOffset(merchContent, offset);
+    
+    expect(result).toBeDefined();
+    expect(result?.type).toBe('updated');
+    if (result?.type === 'updated') {
+        expect(result.file.idx).toBe(0);
+    }
+});
+
+test('fold and unfold file in the middle', async () => {
+    const fs = new MemoryFileSystem({
+        '/src/first.txt': 'first content',
+        '/src/middle.txt': 'middle content',
+        '/src/last.txt': 'last content',
+    });
+
+    const writer = new StringWriter();
+    await mergeFiles(['/src/first.txt', '/src/middle.txt', '/src/last.txt'], writer, formatter, '/src', false, fs);
+
+    expect(writer.content).toMatchInlineSnapshot(`
+"// ====================
+// merch::setup: {"basePath":"/src"}
+// merch::existing-file: {"path":"first.txt","idx":0,"hash":"2cd4837c7726f70047c8fdafb52801dbfef2cb4f7bc4cfb2e0441980f9d4a3b8"}
+// merch::existing-file: {"path":"middle.txt","idx":1,"hash":"bc9edea119f18e6850d3b30850ff6e2d8d129290617e68c956443862bcbed61e"}
+// merch::existing-file: {"path":"last.txt","idx":2,"hash":"ef8df77cd739d061129888634cd3941fd6a9a249bfa897e61a06cdd5d5cf5f0f"}
+// ====================
+
+// merch::file: {"path":"first.txt","idx":0}:
+first content
+// merch::file: {"path":"middle.txt","idx":1}:
+middle content
+// merch::file: {"path":"last.txt","idx":2}:
+last content
+"
+`);
+
+    // Fold the middle file
+    const doc = parseMerchDoc(writer.content);
+    const middleFile = doc.updatedFiles.get(1)!;
+    
+    const foldResult = await foldFile(writer.content, middleFile, fs, '/src');
+    expect(foldResult.hadModifiedContent).toBe(false);
+    expect(foldResult.newContent).toMatchInlineSnapshot(`
+"// ====================
+// merch::setup: {"basePath":"/src"}
+// merch::existing-file: {"path":"first.txt","idx":0,"hash":"2cd4837c7726f70047c8fdafb52801dbfef2cb4f7bc4cfb2e0441980f9d4a3b8"}
+// merch::existing-file: {"path":"middle.txt","idx":1,"hash":"bc9edea119f18e6850d3b30850ff6e2d8d129290617e68c956443862bcbed61e"}
+// merch::existing-file: {"path":"last.txt","idx":2,"hash":"ef8df77cd739d061129888634cd3941fd6a9a249bfa897e61a06cdd5d5cf5f0f"}
+// ====================
+
+// merch::file: {"path":"first.txt","idx":0}:
+first content
+// merch::file: {"path":"middle.txt","idx":1}
+// merch::file: {"path":"last.txt","idx":2}:
+last content
+"
+`);
+
+    // Unfold the middle file
+    const docAfterFold = parseMerchDoc(foldResult.newContent);
+    const middleFileFolded = docAfterFold.updatedFiles.get(1)!;
+    
+    const unfoldResult = await unfoldFile(foldResult.newContent, middleFileFolded, fs, '/src');
+    expect(unfoldResult.newContent).toMatchInlineSnapshot(`
+"// ====================
+// merch::setup: {"basePath":"/src"}
+// merch::existing-file: {"path":"first.txt","idx":0,"hash":"2cd4837c7726f70047c8fdafb52801dbfef2cb4f7bc4cfb2e0441980f9d4a3b8"}
+// merch::existing-file: {"path":"middle.txt","idx":1,"hash":"bc9edea119f18e6850d3b30850ff6e2d8d129290617e68c956443862bcbed61e"}
+// merch::existing-file: {"path":"last.txt","idx":2,"hash":"ef8df77cd739d061129888634cd3941fd6a9a249bfa897e61a06cdd5d5cf5f0f"}
+// ====================
+
+// merch::file: {"path":"first.txt","idx":0}:
+first content
+// merch::file: {"path":"middle.txt","idx":1}:
+middle content
+// merch::file: {"path":"last.txt","idx":2}:
+last content
+"
+`);
+});
+
+test('unfold two consecutive folded files', async () => {
+    const fs = new MemoryFileSystem({
+        '/src/file1.txt': 'content one',
+        '/src/file2.txt': 'content two',
+    });
+
+    // Start with both files folded
+    const merchContent = `// ====================
+// merch::setup: {"basePath":"/src"}
+// merch::existing-file: {"path":"file1.txt","idx":0,"hash":"abc"}
+// merch::existing-file: {"path":"file2.txt","idx":1,"hash":"def"}
+// ====================
+
+// merch::file: {"path":"file1.txt","idx":0}
+// merch::file: {"path":"file2.txt","idx":1}
+`;
+
+    // Unfold the first file
+    const doc1 = parseMerchDoc(merchContent);
+    const file1 = doc1.updatedFiles.get(0)!;
+    const result1 = await unfoldFile(merchContent, file1, fs, '/src');
+
+    expect(result1.newContent).toMatchInlineSnapshot(`
+"// ====================
+// merch::setup: {"basePath":"/src"}
+// merch::existing-file: {"path":"file1.txt","idx":0,"hash":"abc"}
+// merch::existing-file: {"path":"file2.txt","idx":1,"hash":"def"}
+// ====================
+
+// merch::file: {"path":"file1.txt","idx":0}:
+content one
+// merch::file: {"path":"file2.txt","idx":1}
+"
+`);
+
+    // Unfold the second file
+    const doc2 = parseMerchDoc(result1.newContent);
+    const file2 = doc2.updatedFiles.get(1)!;
+    const result2 = await unfoldFile(result1.newContent, file2, fs, '/src');
+
+    expect(result2.newContent).toMatchInlineSnapshot(`
+"// ====================
+// merch::setup: {"basePath":"/src"}
+// merch::existing-file: {"path":"file1.txt","idx":0,"hash":"abc"}
+// merch::existing-file: {"path":"file2.txt","idx":1,"hash":"def"}
+// ====================
+
+// merch::file: {"path":"file1.txt","idx":0}:
+content one
+// merch::file: {"path":"file2.txt","idx":1}:
+content two
+"
 `);
 });

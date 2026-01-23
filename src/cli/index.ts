@@ -34,10 +34,10 @@ yargs(hideBin(process.argv))
                 describe: 'Comment style (e.g. "// {}" or "# {}")'
             })
             .option('without-content', {
-                alias: 'w',
+                alias: ['w', 'paths-only'],
                 type: 'boolean',
                 default: false,
-                describe: 'Do not include file content'
+                describe: 'Do not include file content (paths only)'
             });
     }, (argv) => {
         const files = argv.files as string[];
@@ -83,10 +83,10 @@ yargs(hideBin(process.argv))
                 describe: 'Comment style'
             })
             .option('without-content', {
-                alias: 'w',
+                alias: ['w', 'paths-only'],
                 type: 'boolean',
                 default: false,
-                describe: 'Do not include file content'
+                describe: 'Do not include file content (paths only)'
             })
             .option('no-hash-check', {
                 type: 'boolean',
